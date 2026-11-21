@@ -32,6 +32,18 @@ El problema se observa cuando varios componentes de una aplicación Boot reciben
 
 El [fragmento de `addSingleton`, líneas 141–149](evidencia/singleton.md), muestra que `putIfAbsent` intenta asociar la instancia al nombre y que el registro rechaza una segunda asociación existente. Después retira las referencias de exposición temprana. Al consultar el registro, la fábrica puede recuperar la referencia vinculada al nombre. Los participantes siguen la relación `Cliente → fábrica → registro[nombre] → instancia` (Spring, 2024a).
 
+```java
+	protected void addSingleton(String beanName, Object singletonObject) {
+		Object oldObject = this.singletonObjects.putIfAbsent(beanName, singletonObject);
+		if (oldObject != null) {
+			throw new IllegalStateException("Could not register object [" + singletonObject +
+					"] under bean name '" + beanName + "': there is already object [" + oldObject + "] bound");
+		}
+		this.singletonFactories.remove(beanName);
+		this.earlySingletonObjects.remove(beanName);
+		this.registeredSingletons.add(beanName);
+```
+
 La implementación refuerza **SRP**. El registro conserva la política de identidad y reutilización. La clase del servicio se ocupa de su comportamiento y puede seguir siendo una clase Java ordinaria. Un cambio de ámbito se configura en la definición del bean, de forma que el servicio no necesita incorporar lógica para controlar cuántas veces se construye.
 
 ## 4. Proxy — Estructural
@@ -42,6 +54,23 @@ En Spring Boot, cuando se configura la gestión declarativa de transacciones med
 
 El [fragmento de `invoke`, líneas 211–224](evidencia/proxy.md), distingue dos rutas. Si la cadena de interceptores está vacía, se invoca el objetivo por reflexión. Cuando hay interceptores, `ReflectiveMethodInvocation` encapsula la llamada y `proceed()` da paso a la cadena. La relación es `Cliente → proxy → interceptores → objetivo` (Spring, 2024b). Una llamada interna mediante `this` evita el proxy, de modo que el interceptor requiere que la llamada cruce esa frontera (Spring, s. f.-b).
 
+```java
+			if (chain.isEmpty()) {
+				// We can skip creating a MethodInvocation: just invoke the target directly
+				// Note that the final invoker must be an InvokerInterceptor so we know it does
+				// nothing but a reflective operation on the target, and no hot swapping or fancy proxying.
+				Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+				retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
+			}
+			else {
+				// We need to create a method invocation...
+				MethodInvocation invocation =
+						new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
+				// Proceed to the joinpoint through the interceptor chain.
+				retVal = invocation.proceed();
+			}
+```
+
 El patrón refuerza **OCP** en este contexto. Se puede incorporar un interceptor compatible o modificar el conjunto de métodos a los que se aplica sin editar la implementación del servicio. Refuerza también **SRP**, ya que el interceptor controla una política transversal mientras el objetivo realiza la operación de negocio.
 
 ## 5. Observer — Comportamiento
@@ -51,6 +80,23 @@ Observer permite que varios suscriptores reaccionen a un cambio comunicado media
 En una aplicación Boot, cuando se registra un pedido, un componente puede publicar un evento del que dependen tareas independientes, como el registro de métricas o la escritura de una entrada de auditoría. Con llamadas directas, el servicio tendría que conocer cada destinatario y cambiar al añadir uno nuevo. La distribución por tipos de evento permite registrar otro listener compatible sin editar el servicio. El mecanismo opera dentro del contexto y no aporta por sí solo persistencia del evento ni garantías de entrega propias de un sistema de mensajería.
 
 El [fragmento de `multicastEvent`, líneas 145–158](evidencia/observer.md), muestra que se recorren los listeners compatibles. El multicaster programa la ejecución si cuenta con un ejecutor y el listener admite ese modo. En los demás casos lo invoca en el hilo que publica, incluido el caso de rechazo del ejecutor mostrado en el fragmento (Spring, 2024c). El flujo es `Publicador → multicaster → observadores compatibles`. Por defecto, el despacho es síncrono. Si se habilita ejecución asíncrona, el código cliente debe revisar qué contexto de hilo necesita el listener (Spring, s. f.-c).
+
+```java
+		for (ApplicationListener<?> listener : getApplicationListeners(event, type)) {
+			if (executor != null && listener.supportsAsyncExecution()) {
+				try {
+					executor.execute(() -> invokeListener(listener, event));
+				}
+				catch (RejectedExecutionException ex) {
+					// Probably on shutdown -> invoke listener locally instead
+					invokeListener(listener, event);
+				}
+			}
+			else {
+				invokeListener(listener, event);
+			}
+		}
+```
 
 La solución refuerza **OCP** al admitir reacciones nuevas por registro. También refuerza **DIP**, porque la lógica que publica depende de `ApplicationEventPublisher` y del contrato del evento. El multicaster despacha mediante `ApplicationListener` y cada implementación decide cómo reaccionar. Los contratos conservan el acoplamiento necesario para compartir el significado del evento.
 
